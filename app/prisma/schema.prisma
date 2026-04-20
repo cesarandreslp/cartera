@@ -1,0 +1,223 @@
+// GST S.A.S — Cartera & Facturación Electrónica
+// Prisma Schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+// ─── USERS & AUTH ────────────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(OPERATOR)
+  permissions  Json     @default("{}")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  payments    Payment[]
+  auditLogs   AuditLog[]
+  billingRuns AutoBillingRun[]
+  fiscalYears FiscalYear[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  OPERATOR
+  VIEWER
+}
+
+// ─── BUILDINGS / CLIENTS ─────────────────────────────────────────────────────
+model Building {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  nit       String
+  address   String?
+  city      String?
+  phone     String?
+  email     String?
+  contact   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  invoices Invoice[]
+
+  @@map("buildings")
+}
+
+// ─── INVOICES ─────────────────────────────────────────────────────────────────
+model Invoice {
+  id          String        @id @default(cuid())
+  number      String        @unique
+  buildingId  String        @map("building_id")
+  building    Building      @relation(fields: [buildingId], references: [id])
+  period      String        // "2024-01" formato YYYY-MM
+  type        InvoiceType   @default(MANUAL)
+  concept     String?
+  subtotal    Decimal       @db.Decimal(14, 2)
+  discount    Decimal       @default(0) @db.Decimal(14, 2)
+  mora        Decimal       @default(0) @db.Decimal(14, 2)
+  tax         Decimal       @default(0) @db.Decimal(14, 2)
+  total       Decimal       @db.Decimal(14, 2)
+  status      InvoiceStatus @default(PENDING)
+  dueDate     DateTime?     @map("due_date")
+  notes       String?
+  fiscalYear  Int           @map("fiscal_year")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  documentUrl String?       @map("document_url") // Enlace a Vercel Blob
+
+  payments   Payment[]
+  feDocument FeDocument?
+
+  @@index([buildingId])
+  @@index([period])
+  @@index([status])
+  @@map("invoices")
+}
+
+enum InvoiceType {
+  MANUAL
+  ELECTRONIC
+  MASSIVE
+}
+
+enum InvoiceStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
+  VOID
+}
+
+// ─── PAYMENTS ─────────────────────────────────────────────────────────────────
+model Payment {
+  id          String        @id @default(cuid())
+  invoiceId   String        @map("invoice_id")
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id])
+  userId      String        @map("user_id")
+  user        User          @relation(fields: [userId], references: [id])
+  amount      Decimal       @db.Decimal(14, 2)
+  date        DateTime
+  method      PaymentMethod @default(TRANSFER)
+  reference   String?
+  notes       String?
+  receiptNum  String?       @map("receipt_num")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@index([invoiceId])
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  CHEQUE
+  CARD
+  OTHER
+}
+
+// ─── FACTURACIÓN ELECTRÓNICA ─────────────────────────────────────────────────
+model FeDocument {
+  id           String     @id @default(cuid())
+  invoiceId    String     @unique @map("invoice_id")
+  invoice      Invoice    @relation(fields: [invoiceId], references: [id])
+  prefix       String?
+  consecutive  Int
+  cufe         String?    @unique
+  xmlUbl       String?    @map("xml_ubl") @db.Text
+  xmlSigned    String?    @map("xml_signed") @db.Text
+  dianStatus   DianStatus @default(PENDING) @map("dian_status")
+  dianMessage  String?    @map("dian_message") @db.Text
+  dianCode     String?    @map("dian_code")
+  signedAt     DateTime?  @map("signed_at")
+  sentAt       DateTime?  @map("sent_at")
+  acceptedAt   DateTime?  @map("accepted_at")
+  noteType     NoteType?  @map("note_type")
+  noteReason   String?    @map("note_reason")
+  parentId     String?    @map("parent_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  pdfUrl       String?    @map("pdf_url")      // Enlace a Vercel Blob para PDF DIAN
+
+  @@map("fe_documents")
+}
+
+enum DianStatus {
+  PENDING
+  SIGNED
+  SENT
+  ACCEPTED
+  REJECTED
+  VOID
+}
+
+enum NoteType {
+  CREDIT
+  DEBIT
+}
+
+// ─── COBROS AUTOMÁTICOS ───────────────────────────────────────────────────────
+model AutoBillingRun {
+  id          String   @id @default(cuid())
+  executedBy  String   @map("executed_by")
+  user        User     @relation(fields: [executedBy], references: [id])
+  executedAt  DateTime @default(now()) @map("executed_at")
+  period      String
+  totalSent   Int      @default(0) @map("total_sent")
+  totalErrors Int      @default(0) @map("total_errors")
+  result      Json     @default("[]")
+  mode        String   @default("AUTO") // AUTO | MANUAL
+
+  @@map("auto_billing_runs")
+}
+
+// ─── CIERRE FISCAL ────────────────────────────────────────────────────────────
+model FiscalYear {
+  id         String   @id @default(cuid())
+  year       Int      @unique
+  closedAt   DateTime @map("closed_at")
+  closedById String   @map("closed_by_id")
+  closedBy   User     @relation(fields: [closedById], references: [id])
+  summary    Json     @default("{}")
+
+  @@map("fiscal_years")
+}
+
+// ─── AUDITORÍA ────────────────────────────────────────────────────────────────
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  module    String
+  action    String
+  detail    String?  @db.Text
+  entityId  String?  @map("entity_id")
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([module])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── CONFIGURACIÓN DEL SISTEMA ────────────────────────────────────────────────
+model SystemConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_config")
+}
