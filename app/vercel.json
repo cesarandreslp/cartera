@@ -1,0 +1,6 @@
+{
+  "buildCommand": "npm run control:generate && npm run db:generate && next build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install",
+  "framework": "nextjs"
+}
