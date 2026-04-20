@@ -35,14 +35,47 @@ export async function requireSession(): Promise<ApiSession | Response> {
 // ─── Tenant DB helper (use inside API routes) ─────────────────────────────────
 
 /**
- * Resolves the tenant DB from the current request headers.
+ * Resolves the tenant PrismaClient from the current request headers.
+ * The middleware injects x-tenant-slug (or x-tenant-id if already resolved).
+ *
+ * Resolution order:
+ *  1. x-tenant-id  → direct cache lookup (already resolved)
+ *  2. x-tenant-slug → lookup slug in control plane → tenantId → DB
+ *  3. x-tenant-host with __custom__ prefix → lookup customDomain
+ *
  * Usage: const db = await getDb(await headers())
  */
 export async function getDb(hdrs: Awaited<ReturnType<typeof headers>>): Promise<PrismaClient> {
+  // Fast path: tenantId already in headers
   const tenantId = hdrs.get('x-tenant-id')
-  if (!tenantId) throw new Error('No x-tenant-id header — request missing tenant context')
-  return getTenantDb(tenantId)
+  if (tenantId) return getTenantDb(tenantId)
+
+  // Resolve from slug
+  const slug = hdrs.get('x-tenant-slug')
+  if (!slug) throw new Error('No tenant context — x-tenant-slug header missing')
+
+  const { controlDb } = await import('@/lib/controlDb')
+
+  if (slug.startsWith('__custom__')) {
+    // Custom domain
+    const hostname = slug.replace('__custom__', '')
+    const tenant = await controlDb.tenant.findUnique({
+      where:  { customDomain: hostname },
+      select: { id: true, active: true },
+    })
+    if (!tenant || !tenant.active) throw new Error(`Tenant not found for domain ${hostname}`)
+    return getTenantDb(tenant.id)
+  }
+
+  // Slug-based lookup
+  const tenant = await controlDb.tenant.findUnique({
+    where:  { slug },
+    select: { id: true, active: true },
+  })
+  if (!tenant || !tenant.active) throw new Error(`Tenant not found for slug "${slug}"`)
+  return getTenantDb(tenant.id)
 }
+
 
 // ─── Permission helpers ───────────────────────────────────────────────────────
 

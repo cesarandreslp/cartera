@@ -1,101 +1,92 @@
 /**
- * Middleware — Tenant resolution by hostname.
+ * Middleware — Edge-compatible tenant resolution by hostname.
  *
- * Flow:
- * 1. Extract hostname from request
- * 2. Match against slug.MAIN_DOMAIN OR custom domain in control plane
- * 3. Inject x-tenant-id / x-tenant-slug / x-tenant-name into headers
- * 4. Protect routes requiring authentication
+ * IMPORTANT: Next.js middleware runs in the Edge Runtime (no Node.js APIs).
+ * This middleware ONLY does lightweight work:
+ *  1. Extract hostname & determine tenant slug/domain
+ *  2. Inject x-tenant-slug + x-tenant-host into headers for Server Components
+ *  3. Protect routes requiring authentication (via JWT cookie check)
+ *
+ * The actual DB lookup (slug → tenantId + databaseUrl) is done in:
+ *  - getDb() in src/lib/api.ts  (runs in Node.js server context)
+ *  - getTenantDb() in src/lib/tenantDb.ts
+ *
+ * The middleware passes the slug via header; the API/Server resolves the DB.
  */
-import { auth }         from '@/lib/auth'
-import { controlDb }    from '@/lib/controlDb'
 import type { NextRequest } from 'next/server'
 import { NextResponse }    from 'next/server'
 
-const MAIN_DOMAIN  = process.env.MAIN_DOMAIN  ?? 'gst.com.co'
+const MAIN_DOMAIN     = process.env.MAIN_DOMAIN ?? 'gst.com.co'
 const SUPERADMIN_HOST = `superadmin.${MAIN_DOMAIN}`
 
-// Routes that don't need tenant resolution
-const PUBLIC_PATHS  = ['/registro', '/api/public']
-const STATIC_PATHS  = ['/_next', '/favicon.ico', '/api/auth']
+// Paths that bypass all auth and tenant checks
+const STATIC_PREFIXES  = ['/_next', '/favicon.ico']
+const PUBLIC_PREFIXES  = ['/api/auth', '/api/public', '/registro']
 
-export async function middleware(request: NextRequest) {
+export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
-  const hostname = request.headers.get('host')?.split(':')[0] ?? ''
+  const hostname     = request.headers.get('host')?.split(':')[0] ?? ''
 
-  // ── Skip static assets & auth callbacks ───────────────────────────────────
-  if (STATIC_PATHS.some(p => pathname.startsWith(p))) {
+  // ── Skip static assets ────────────────────────────────────────────────────
+  if (STATIC_PREFIXES.some(p => pathname.startsWith(p))) {
     return NextResponse.next()
   }
 
-  // ── Superadmin panel (no tenant) ──────────────────────────────────────────
+  // ── Skip public paths (no auth, no tenant) ────────────────────────────────
+  if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) {
+    return NextResponse.next()
+  }
+
+  // ── Superadmin panel ──────────────────────────────────────────────────────
   if (hostname === SUPERADMIN_HOST || pathname.startsWith('/superadmin')) {
-    const session = await auth()
-    if (!session) return NextResponse.redirect(new URL('/login', request.url))
-    if ((session.user as any)?.role !== 'SUPERADMIN') {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
+    // Auth is checked in the superadmin layout (Server Component)
+    return NextResponse.next()
+  }
+
+  // ── Determine tenant slug from hostname ───────────────────────────────────
+  let tenantSlug: string | null = null
+
+  if (hostname.endsWith(`.${MAIN_DOMAIN}`)) {
+    tenantSlug = hostname.replace(`.${MAIN_DOMAIN}`, '')
+  } else if (hostname !== MAIN_DOMAIN && hostname !== `www.${MAIN_DOMAIN}` && hostname !== 'localhost') {
+    // Custom domain — pass the full hostname; Server will resolve from DB
+    tenantSlug = `__custom__${hostname}`
+  } else if (hostname === 'localhost' || hostname.startsWith('127.') || hostname.startsWith('192.')) {
+    // Local development: use demo tenant or env override
+    tenantSlug = process.env.DEV_TENANT_SLUG ?? 'gst-demo'
+  }
+
+  // Root domain with no tenant: redirect to /registro
+  if (!tenantSlug) {
+    if (pathname === '/') {
+      return NextResponse.redirect(new URL('/registro', request.url))
     }
     return NextResponse.next()
   }
 
-  // ── Public registration (no tenant) ───────────────────────────────────────
-  if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
-    return NextResponse.next()
+  // ── Auth check via cookie (Edge-compatible) ───────────────────────────────
+  const sessionCookie =
+    request.cookies.get('authjs.session-token') ??
+    request.cookies.get('__Secure-authjs.session-token') ??
+    request.cookies.get('next-auth.session-token') ??
+    request.cookies.get('__Secure-next-auth.session-token')
+
+  const isLoginPage = pathname.startsWith('/login')
+
+  if (!sessionCookie && !isLoginPage) {
+    const loginUrl = new URL('/login', request.url)
+    loginUrl.searchParams.set('callbackUrl', pathname)
+    return NextResponse.redirect(loginUrl)
   }
 
-  // ── Tenant resolution ─────────────────────────────────────────────────────
-  let tenant: { id: string; slug: string; name: string; active: boolean } | null = null
-
-  try {
-    if (hostname.endsWith(`.${MAIN_DOMAIN}`)) {
-      const slug = hostname.replace(`.${MAIN_DOMAIN}`, '')
-      tenant = await controlDb.tenant.findUnique({
-        where: { slug },
-        select: { id: true, slug: true, name: true, active: true },
-      })
-    } else if (hostname !== MAIN_DOMAIN && hostname !== `www.${MAIN_DOMAIN}`) {
-      // Custom domain
-      tenant = await controlDb.tenant.findUnique({
-        where: { customDomain: hostname },
-        select: { id: true, slug: true, name: true, active: true },
-      })
-    }
-  } catch {
-    // control plane unreachable — fail open to avoid full outage
+  if (sessionCookie && isLoginPage) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
-  if (!tenant || !tenant.active) {
-    // Root domain or unknown → redirect to main marketing/login page
-    if (hostname === MAIN_DOMAIN || hostname === `www.${MAIN_DOMAIN}`) {
-      if (pathname === '/') {
-        return NextResponse.redirect(new URL('/registro', request.url))
-      }
-      return NextResponse.next()
-    }
-    return NextResponse.rewrite(new URL('/tenant-not-found', request.url))
-  }
-
-  // ── Auth check ────────────────────────────────────────────────────────────
-  const session = await auth()
-
-  if (pathname.startsWith('/login')) {
-    if (session) return NextResponse.redirect(new URL('/dashboard', request.url))
-    const res = NextResponse.next()
-    res.headers.set('x-tenant-id',   tenant.id)
-    res.headers.set('x-tenant-slug', tenant.slug)
-    res.headers.set('x-tenant-name', tenant.name)
-    return res
-  }
-
-  if (!session) {
-    return NextResponse.redirect(new URL('/login', request.url))
-  }
-
-  // ── Inject tenant context ─────────────────────────────────────────────────
+  // ── Inject tenant context into headers ────────────────────────────────────
   const res = NextResponse.next()
-  res.headers.set('x-tenant-id',   tenant.id)
-  res.headers.set('x-tenant-slug', tenant.slug)
-  res.headers.set('x-tenant-name', tenant.name)
+  res.headers.set('x-tenant-slug', tenantSlug)
+  res.headers.set('x-tenant-host', hostname)
   return res
 }
 
