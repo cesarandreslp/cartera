@@ -1,0 +1,80 @@
+// prisma/schema.control.prisma
+// Control Plane: registro global de tenants y superadmins
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/control"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── TENANTS ──────────────────────────────────────────────────────────────────
+model Tenant {
+  id           String     @id @default(cuid())
+  slug         String     @unique // "empresa-x" → empresa-x.gst.com.co
+  name         String // "Empresa X S.A.S"
+  nit          String
+  address      String?
+  city         String?
+  phone        String?
+  email        String?
+  customDomain String?    @unique @map("custom_domain") // "empresa-x.com"
+  databaseUrl  String     @map("database_url") // AES-256 encrypted Neon URL
+  plan         TenantPlan @default(BASIC)
+  active       Boolean    @default(true)
+
+  // DIAN — certificado por tenant
+  certBlobUrl  String? @map("cert_blob_url") // Vercel Blob URL (acceso privado)
+  certPassword String? @map("cert_password") // AES-256 encrypted
+  dianPrefix   String? @map("dian_prefix") // Prefijo FE asignado por DIAN
+  dianEnv      String  @default("TEST") @map("dian_env") // TEST | PROD
+
+  // Meta
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("tenants")
+}
+
+enum TenantPlan {
+  BASIC
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+// ─── SUPER ADMINS ─────────────────────────────────────────────────────────────
+model SuperAdmin {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("super_admins")
+}
+
+// ─── REGISTRO PÚBLICO (leads en espera de aprovisionamiento) ──────────────────
+model TenantRegistration {
+  id        String    @id @default(cuid())
+  name      String
+  nit       String
+  email     String
+  phone     String?
+  city      String?
+  slug      String    @unique
+  status    RegStatus @default(PENDING)
+  tenantId  String?   @map("tenant_id") // populated after provisioning
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("tenant_registrations")
+}
+
+enum RegStatus {
+  PENDING
+  PROVISIONING
+  ACTIVE
+  REJECTED
+}

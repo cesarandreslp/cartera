@@ -1,14 +1,8 @@
-import { prisma } from '@/lib/db'
-import { audit, fail, isResponse, ok, readJson, requirePerm, requireSession } from '@/lib/api'
-import { emitInvoice } from '@/lib/dian/emit'
+import { audit, fail, isResponse, ok, readJson, requirePerm, requireSession, getDb } from '@/lib/api'
+import { headers } from 'next/headers'
 import type { NextRequest } from 'next/server'
 
-type Body = {
-  period: string
-  buildingIds?: string[]
-  emit?: boolean
-  mode?: 'AUTO' | 'MANUAL'
-}
+type Body = { period: string; buildingIds?: string[]; emit?: boolean; mode?: 'AUTO' | 'MANUAL' }
 
 export async function POST(req: NextRequest) {
   const session = await requireSession()
@@ -16,6 +10,7 @@ export async function POST(req: NextRequest) {
   const denied = requirePerm(session, 'cobros', 'create')
   if (denied) return denied
 
+  const db   = await getDb(await headers())
   const body = await readJson<Body>(req)
   if (isResponse(body)) return body
 
@@ -23,21 +18,20 @@ export async function POST(req: NextRequest) {
     return fail('period debe tener formato YYYY-MM')
   }
 
-  const buildings = await prisma.building.findMany({
+  const buildings = await db.building.findMany({
     where: {
       active: true,
-      ...(body.buildingIds && body.buildingIds.length > 0 ? { id: { in: body.buildingIds } } : {}),
+      ...(body.buildingIds?.length ? { id: { in: body.buildingIds } } : {}),
     },
   })
 
   const fiscalYear = Number(body.period.slice(0, 4))
   const results: Array<{ buildingCode: string; status: string; message?: string; invoiceId?: string }> = []
-  let ok_count = 0
-  let err_count = 0
+  let ok_count = 0, err_count = 0
 
   for (const b of buildings) {
     try {
-      const exists = await prisma.invoice.findFirst({
+      const exists = await db.invoice.findFirst({
         where: { buildingId: b.id, period: body.period, status: { not: 'VOID' } },
       })
       if (exists) {
@@ -45,61 +39,38 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      const lastNumber = await prisma.invoice.findFirst({
-        orderBy: { createdAt: 'desc' },
-        select: { number: true },
-      })
-      const seq = lastNumber ? (parseInt(lastNumber.number.replace(/\D/g, ''), 10) || 0) + 1 : 1
-      const number = `FAC-${String(seq).padStart(4, '0')}`
+      const lastNumber = await db.invoice.findFirst({ orderBy: { createdAt: 'desc' }, select: { number: true } })
+      const seq        = lastNumber ? (parseInt(lastNumber.number.replace(/\D/g, ''), 10) || 0) + 1 : 1
+      const number     = `FAC-${String(seq).padStart(4, '0')}`
+      const subtotal   = 1_500_000
+      const tax        = Math.round(subtotal * 0.19)
 
-      const subtotal = 1_500_000
-      const tax = Math.round(subtotal * 0.19)
-      const total = subtotal + tax
-
-      const inv = await prisma.invoice.create({
+      const inv = await db.invoice.create({
         data: {
-          number,
-          buildingId: b.id,
-          period: body.period,
-          type: 'MASSIVE',
+          number, buildingId: b.id, period: body.period, type: 'MASSIVE',
           concept: `Administración ${body.period}`,
-          subtotal,
-          discount: 0,
-          mora: 0,
-          tax,
-          total,
-          status: 'PENDING',
-          dueDate: new Date(Date.now() + 30 * 86_400_000),
-          fiscalYear,
+          subtotal, discount: 0, mora: 0, tax, total: subtotal + tax,
+          status: 'PENDING', dueDate: new Date(Date.now() + 30 * 86_400_000), fiscalYear,
         },
       })
-
-      if (body.emit) {
-        await emitInvoice(inv.id)
-      }
 
       results.push({ buildingCode: b.code, status: 'ok', invoiceId: inv.id })
       ok_count++
     } catch (e) {
       err_count++
-      const msg = e instanceof Error ? e.message : 'Error'
-      results.push({ buildingCode: b.code, status: 'error', message: msg })
+      results.push({ buildingCode: b.code, status: 'error', message: e instanceof Error ? e.message : 'Error' })
     }
   }
 
-  const run = await prisma.autoBillingRun.create({
+  const run = await db.autoBillingRun.create({
     data: {
-      executedBy: session.userId,
-      period: body.period,
-      totalSent: ok_count,
-      totalErrors: err_count,
-      result: results,
-      mode: body.mode ?? 'MANUAL',
+      executedBy: session.userId, period: body.period,
+      totalSent: ok_count, totalErrors: err_count,
+      result: results, mode: body.mode ?? 'MANUAL',
     },
   })
 
-  await audit(session, 'cobros', 'run', `Período ${body.period}: ${ok_count} OK, ${err_count} error`, run.id)
-
+  await audit(session, db, 'cobros', 'run', `Período ${body.period}: ${ok_count} OK, ${err_count} error`, run.id)
   return ok({ runId: run.id, totalSent: ok_count, totalErrors: err_count, results })
 }
 
@@ -109,11 +80,11 @@ export async function GET() {
   const denied = requirePerm(session, 'cobros', 'view')
   if (denied) return denied
 
-  const runs = await prisma.autoBillingRun.findMany({
+  const db   = await getDb(await headers())
+  const runs = await db.autoBillingRun.findMany({
     include: { user: { select: { name: true } } },
     orderBy: { executedAt: 'desc' },
     take: 50,
   })
-
   return ok(runs)
 }

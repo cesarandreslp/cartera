@@ -30,7 +30,7 @@ export default function DocumentUploader({
     setError(null)
 
     try {
-      const blob = await uploadDocument(file, file.name, entityId, type)
+      const blob = await uploadDocument(file, file.name, entityId ?? '', type)
       if (onUploadComplete) {
         onUploadComplete(blob.url)
       }

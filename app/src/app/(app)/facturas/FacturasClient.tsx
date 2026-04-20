@@ -19,6 +19,7 @@ type Row = {
   status: string
   dianStatus: string | null
   createdAt: string
+  dueDate: string | null
   documentUrl: string | null
 }
 
