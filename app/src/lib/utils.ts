@@ -1,30 +1,12 @@
-import { prisma } from '@/lib/db'
-import { auth } from '@/lib/auth'
+/**
+ * Client-safe utilities — no imports from server-only modules.
+ * Safe to import from both Server and Client Components.
+ */
 
 export type Module =
   | 'dashboard' | 'edificios' | 'facturas' | 'facturacion'
   | 'pagos' | 'cartera' | 'cobros' | 'reportes' | 'gerencial'
   | 'documentos' | 'cierre' | 'auditoria' | 'usuarios' | 'config' | 'ayuda'
-
-export async function logAction(
-  userId: string,
-  module: Module,
-  action: string,
-  detail?: string,
-  entityId?: string
-) {
-  await prisma.auditLog.create({
-    data: { userId, module, action, detail, entityId },
-  })
-}
-
-export async function requireAuth() {
-  const session = await auth()
-  if (!session?.user) {
-    throw new Error('No autenticado')
-  }
-  return session
-}
 
 export function hasPermission(
   permissions: Record<string, any>,
