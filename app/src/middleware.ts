@@ -46,14 +46,25 @@ export function middleware(request: NextRequest) {
   // ── Determine tenant slug from hostname ───────────────────────────────────
   let tenantSlug: string | null = null
 
-  if (hostname.endsWith(`.${MAIN_DOMAIN}`)) {
-    tenantSlug = hostname.replace(`.${MAIN_DOMAIN}`, '')
-  } else if (hostname !== MAIN_DOMAIN && hostname !== `www.${MAIN_DOMAIN}` && hostname !== 'localhost') {
-    // Custom domain — pass the full hostname; Server will resolve from DB
-    tenantSlug = `__custom__${hostname}`
-  } else if (hostname === 'localhost' || hostname.startsWith('127.') || hostname.startsWith('192.')) {
-    // Local development: use demo tenant or env override
+  // Dev / staging environments — use the default demo tenant
+  const isDevHost =
+    hostname === 'localhost' ||
+    hostname.startsWith('127.') ||
+    hostname.startsWith('192.168.') ||
+    hostname.endsWith('.vercel.app') ||
+    hostname.endsWith('.now.sh')
+
+  if (isDevHost) {
     tenantSlug = process.env.DEV_TENANT_SLUG ?? 'gst-demo'
+  } else if (hostname === MAIN_DOMAIN || hostname === `www.${MAIN_DOMAIN}`) {
+    // Root domain — no tenant
+    tenantSlug = null
+  } else if (hostname.endsWith(`.${MAIN_DOMAIN}`)) {
+    // Subdomain: empresa.gst.com.co → slug = "empresa"
+    tenantSlug = hostname.replace(`.${MAIN_DOMAIN}`, '')
+  } else {
+    // Custom domain — resolve from control DB in the server context
+    tenantSlug = `__custom__${hostname}`
   }
 
   // Root domain with no tenant: redirect to /registro
