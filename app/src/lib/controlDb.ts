@@ -4,6 +4,7 @@
  * This DB only holds tenant registry and superadmin accounts.
  * Never use this for tenant-specific data.
  */
+import 'server-only'
 import 'dotenv/config'
 import { PrismaClient } from '@/generated/control'
 import { PrismaPg }     from '@prisma/adapter-pg'

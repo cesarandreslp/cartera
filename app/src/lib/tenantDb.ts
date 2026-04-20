@@ -8,6 +8,7 @@
  * 3. Creates a PrismaClient with PrismaPg adapter connected to that tenant's DB
  * 4. Caches the client per tenantId for the lifetime of the serverless function
  */
+import 'server-only'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg }     from '@prisma/adapter-pg'
 import { controlDb }    from '@/lib/controlDb'

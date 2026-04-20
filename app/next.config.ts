@@ -1,7 +1,13 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  serverExternalPackages: [
+    'pg',
+    '@prisma/adapter-pg',
+    '@prisma/client',
+    'bcryptjs',
+    'nodemailer',
+  ],
+}
 
-export default nextConfig;
+export default nextConfig
