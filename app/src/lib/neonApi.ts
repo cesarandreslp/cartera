@@ -34,6 +34,7 @@ export async function createTenantDatabase(slug: string): Promise<NeonProject> {
         region_id: NEON_REGION,
         pg_version: 16,
         default_branch_name: 'main',
+        org_id: process.env.NEON_ORG_ID,
       },
     }),
   })
